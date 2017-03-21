@@ -4,7 +4,16 @@
 {-|
 This module implements the concept of Dictionary from (gensim <https://radimrehurek.com/gensim/>) project.
 -}
-module NLP.Corpora.Dictionary where
+module NLP.Corpora.Dictionary
+  ( Dictionary
+  , new
+  , addDocument
+  , addDocuments
+  , get
+  , getToken
+  , filterExtremes
+  , doc2bow
+  ) where
 
 import Data.List (sortBy)
 import Data.Function (on)
@@ -87,8 +96,14 @@ doc2bow text dict =
 
 -- | Return token by token id. When no token in dictionary
 -- with given id return Nothing.
-get :: Int -> Dictionary -> IO (Maybe Text)
-get tokenId dict = HashTable.lookup (id2token dict) tokenId
+getToken :: Int -> Dictionary -> IO (Maybe Text)
+getToken tokenId dict = HashTable.lookup (id2token dict) tokenId
+
+
+-- | Return token id by token. When no token in dictionary
+-- with given id return Nothing.
+get :: Text -> Dictionary -> IO (Maybe Int)
+get token dict = HashTable.lookup (token2id dict) token
 
 
 -- | Filter out tokens that appear in
