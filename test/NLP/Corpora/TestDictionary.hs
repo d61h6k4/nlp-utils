@@ -40,4 +40,4 @@ dictionarySpec =
       dict'' <- filterExtremes 0 (length document) dict'
       document_bow' <- doc2bow document dict'
       document_bow'' <- doc2bow document dict''
-      document_bow'' `shouldBe` document_bow'
+      (length document_bow'') `shouldBe` (length document_bow')

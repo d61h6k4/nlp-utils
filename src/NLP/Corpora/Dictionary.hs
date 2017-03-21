@@ -28,14 +28,12 @@ import qualified Data.Set as Set
 
 
 -- | Main structure containing
--- `token2id` hash table where collect pair of token and tokenid
--- `id2token` hash table with tokenid and token pairs (use for restore token by tokenid)
--- `tfs` is token frequencies (use for filter too frequent tokens)
 data Dictionary = Dictionary
-  { token2id :: HashTable.CuckooHashTable Text Int
-  , id2token :: HashTable.CuckooHashTable Int Text
+  { token2id :: HashTable.CuckooHashTable Text Int  -- ^ hash table where collect pair of token and tokenid
+  , id2token :: HashTable.CuckooHashTable Int Text  -- ^ hash table with tokenid and token pairs (use for restore token by tokenid)
   , currentTokenId :: Int
-  , tfs :: HashTable.CuckooHashTable Int Int
+  , tfs :: HashTable.CuckooHashTable Int Int  -- ^ token frequencies (use for filter too frequent tokens)
+  , isChanged :: Bool
   }
 
 
@@ -47,7 +45,7 @@ new = do
   tfs_ <- HashTable.new
   return $
     Dictionary
-    {token2id = t2id, id2token = id2t, currentTokenId = 0, tfs = tfs_}
+    {token2id = t2id, id2token = id2t, currentTokenId = -1, tfs = tfs_, isChanged = False}
 
 -- | Add document to dictionary. Insert all new unique tokens
 -- from document to dictionary. Document is the foldable (e.g. list)
@@ -62,9 +60,8 @@ addDocument text dict =
          Nothing ->
            let currentTokenId' = currentTokenId dict' + 1
            in HashTable.insert (token2id dict') token currentTokenId' >>
-              HashTable.insert (id2token dict') currentTokenId' token >>
               HashTable.insert (tfs dict') currentTokenId' 1 >>
-              return (dict' {currentTokenId = currentTokenId'})
+              return (dict' {currentTokenId = currentTokenId', isChanged = True})
          Just currentTokenId' ->
            HashTable.lookup (tfs dict') currentTokenId' >>= \value ->
              HashTable.insert (tfs dict') currentTokenId' (maybe 1 (+ 1) value) >>
@@ -87,7 +84,7 @@ doc2bow
   :: (Traversable f)
   => f Text -> Dictionary -> IO [(Int, Int)]
 doc2bow text dict =
-  mapM (HashTable.lookup (token2id dict)) text >>=
+  mapM (flip get dict) text >>=
   return .
   Map.toList .
   Map.fromListWith (+) .
@@ -97,7 +94,14 @@ doc2bow text dict =
 -- | Return token by token id. When no token in dictionary
 -- with given id return Nothing.
 getToken :: Int -> Dictionary -> IO (Maybe Text)
-getToken tokenId dict = HashTable.lookup (id2token dict) tokenId
+getToken tokenId dict = do
+  _ <-
+    case (isChanged dict) of
+      True ->
+        mapM_ (\(token, tid) -> HashTable.insert (id2token dict) tid token) =<<
+        HashTable.toList (token2id dict)
+      False -> return ()
+  HashTable.lookup (id2token dict) tokenId
 
 
 -- | Return token id by token. When no token in dictionary
@@ -108,13 +112,18 @@ get token dict = HashTable.lookup (token2id dict) token
 
 -- | Filter out tokens that appear in
 --
--- 1. less than `no_below` times (absolute number) or
--- 2. after (1), keep only the first `keep_n` most frequent tokens (or keep all if `None`).
+--   1. less than `no_below` times (absolute number) or
+--   2. after (1), keep only the first `keep_n` most frequent tokens (or keep all if `None`).
+--
+-- After the pruning, shrink resulting gaps in word ids.
+--
+-- **Note**: Due to the gap shrinking, the same word may have a different
+--           word id before and after the call to this function!
 filterExtremes :: Int -> Int -> Dictionary -> IO Dictionary
 filterExtremes no_below keep_n dict =
   HashTable.toList (tfs dict) >>= return . filter (\(k, v) -> v > no_below) >>=
   return . take keep_n . sortBy (compare `on` snd) >>=
-  flip filterOthers dict
+  flip filterOthers dict >>= compactify
 
 filterOthers :: [(Int, Int)] -> Dictionary -> IO Dictionary
 filterOthers notOthers Dictionary {..} = do
@@ -123,15 +132,28 @@ filterOthers notOthers Dictionary {..} = do
     HashTable.toList token2id >>=
     return . filter (\(k, v) -> Set.member v notOthersIds) >>=
     HashTable.fromList
-  id2token' <-
-    HashTable.toList id2token >>=
-    return . filter (\(k, v) -> Set.member k notOthersIds) >>=
-    HashTable.fromList
   tfs' <- HashTable.fromList notOthers
   return
     (Dictionary
      { token2id = token2id'
-     , id2token = id2token'
+     , id2token = id2token
      , tfs = tfs'
      , currentTokenId = currentTokenId
+     , isChanged = True
      })
+
+-- | Assign new word ids to all words.
+--   This is done to make the ids more compact, e.g. after some tokens have
+--   been removed via 'filterExtremes' and there are gaps in the id series.
+--   Calling this method will remove the gaps.
+compactify :: Dictionary -> IO Dictionary
+compactify dict =
+  HashTable.toList (token2id dict) >>=
+  mapM (\(i, (token, tid)) -> updateTfs tid i >> return (token, i)) . zip [0 ..] >>=
+  HashTable.fromList >>= \t2id ->
+    return (dict {token2id = t2id, isChanged = True})
+  where
+    updateTfs :: Int -> Int -> IO ()
+    updateTfs tid new_tid =
+      HashTable.lookup (tfs dict) tid >>=
+      HashTable.insert (tfs dict) new_tid . maybe 0 id
