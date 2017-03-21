@@ -37,7 +37,7 @@ dictionarySpec =
             ]
       dict <- new
       dict' <- addDocument document dict
-      dict'' <- filterExtremes 0 3 (length document) dict'
+      dict'' <- filterExtremes 0 (length document) dict'
       document_bow' <- doc2bow document dict'
       document_bow'' <- doc2bow document dict''
       document_bow'' `shouldBe` document_bow'
